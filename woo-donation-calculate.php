@@ -13,23 +13,26 @@ class WOO_Donation_Calculate{
 	public function __construct(  ) {
 
 		//  initialization
-		add_action( 'admin_init', array($this, 'woocommerce_installed') );
-
+		add_action( "admin_init", array($this, "woocommerce_installed") );
+		add_action( "admin_init", array($this, "save_organisation") );
+		add_action( "admin_init", array($this, "remove_organisation") );
 
 		//  setup field in the product edit page
-		add_action( 'woocommerce_product_options_general_product_data', array($this, 'product_fields') );
-		add_action( 'woocommerce_process_product_meta', array($this, 'save_field_input') );
+		add_action( "woocommerce_product_options_general_product_data", array($this, "product_fields") );
+		add_action( "woocommerce_process_product_meta", array($this, "save_field_input") );
 
 		//  display notification in the product page.
-		add_action('woocommerce_after_shop_loop_item_title', array($this, 'notification') );
-		add_action('woocommerce_single_product_summary', array($this, 'notification') );
-		add_action('woocommerce_cart_item_subtotal', array($this, 'cart_notification'), 20, 3 );
+		add_action("woocommerce_after_shop_loop_item_title", array($this, "notification") );
+		add_action("woocommerce_single_product_summary", array($this, "notification") );
+		add_action("woocommerce_cart_item_subtotal", array($this, "cart_notification"), 20, 3 );
 
-		add_shortcode( 'product-donation-amount', array($this, 'product_donation_amount') );
+		add_shortcode( "product-donation-amount", array($this, 'product_donation_amount') );
 
 		add_filter("formatted_woocommerce_price", array($this, "format_price"), 20, 5);
 		add_filter("woocommerce_get_formatted_order_total", array($this, "formatted_order_total"));
 		add_filter("woocommerce_order_formatted_line_subtotal", array($this, "formatted_order_subtotal"), 10, 3);
+
+		add_action("admin_menu", array($this, "admin_menu"));
 
 		// Uncomment it if you want to charge your users
 		// add_action( 'woocommerce_before_calculate_totals', array($this, 'add_donation_price') );
@@ -83,6 +86,17 @@ class WOO_Donation_Calculate{
 				'description' => __( 'Check if the donation amount is per quantity.', 'woo_uom' )
 			)
 		);
+
+		$organisations = self::get_organisations();
+		array_unshift($organisations, "Select Organisation");
+
+		woocommerce_wp_select(
+            array(
+                'id'          => '_woo_donation_organisation',
+                'label'       => __( 'Donation organisation', 'woocommerce' ),
+                'options'     => $organisations
+            )
+        );
 		echo '</div>';
 	}
 
@@ -94,9 +108,11 @@ class WOO_Donation_Calculate{
 	public function save_field_input( $post_id ) {
 		$woo_donation_input = isset( $_POST['_woo_donation_input'] ) ? sanitize_text_field( $_POST['_woo_donation_input'] ) : "";
 		$woo_donation_type = isset( $_POST['_woo_donation_type'] ) ? "yes" : "";
+		$woo_donation_organisation = isset( $_POST['_woo_donation_organisation'] ) ? sanitize_text_field( $_POST['_woo_donation_organisation'] ) : "";
 
 		update_post_meta( $post_id, '_woo_donation_input', esc_attr( $woo_donation_input ) );
 		update_post_meta( $post_id, '_woo_donation_type', esc_attr( $woo_donation_type ) );
+		update_post_meta( $post_id, '_woo_donation_organisation', esc_attr( $woo_donation_organisation ) );
 	}
 
 	public function get_donation_amount( $ID ) {
@@ -124,11 +140,11 @@ class WOO_Donation_Calculate{
 	}
 
 	public function get_organisation_name( $ID ) {
-		$organisationID = get_post_meta($ID, '_woo_donation_organisation');
+		$organisationID = get_post_meta($ID, '_woo_donation_organisation', true);
 
-		$organisations = get_option("_donation_organisations", true);
+		$organisations = self::get_organisations();
 
-		return (is_array($organisations) && !empty($organisations) && isset($organisations[$organisationID])) ? $organisations[$organisationID] : "";
+		return ($organisationID !== "" &&is_array($organisations) && !empty($organisations) && isset($organisations[$organisationID])) ? $organisations[$organisationID] : "";
 	}
 
 	public function is_per_item( $ID )
@@ -252,6 +268,82 @@ class WOO_Donation_Calculate{
 		}
 	}
 
+	public function admin_menu(){
+		add_options_page("Woo Donation Organisations","Woo Donation Organisation","manage_options", "woo-donation-organisations", array($this, "organisations"));
+	}
+
+	public function organisations(){
+		include_once trailingslashit(plugin_dir_path(__FILE__)) . "organisations.php";
+	}
+
+	public function save_organisation(){
+
+		if(!isset($_POST) || !isset($_POST['_woo_org_token']) || !wp_verify_nonce($_POST['_woo_org_token'], '__woo_donation_add_organisations')){
+			return;
+		}
+
+		$base_url = admin_url('options-general.php?page=woo-donation-organisations');
+		$status = 1;
+
+		if(!isset($_POST['org-name'])){
+			$status = 2;
+        }
+        else if(esc_attr($_POST['org-name']) === ""){
+	        $status = 3;
+        }
+
+        $organisations = self::get_organisations();
+
+		$organisation = esc_attr($_POST['org-name']);
+		$organisation_index = sanitize_title($organisation);
+
+		if(isset($organisations[$organisation_index])){
+		    $status = 4;
+        }
+        elseif($status === 1){
+	        $organisations[$organisation_index] = $organisation;
+	        update_option("_donation_organisations", $organisations);
+        }
+
+		$url = add_query_arg(array('status' => $status), $base_url);
+
+		wp_safe_redirect($url);
+		die();
+	}
+
+	public function remove_organisation(){
+		if(!isset($_GET) || !isset($_GET['_woo_org_token']) || !wp_verify_nonce($_GET['_woo_org_token'], '__woo_donation_remove_organisation')){
+			return;
+		}
+
+		$base_url = admin_url('options-general.php?page=woo-donation-organisations');
+		$status = 5;
+
+		if(!isset($_GET['organisation_key'])){
+			$status = 6;
+		}
+		else if(esc_attr($_GET['organisation_key']) === ""){
+			$status = 6;
+		}
+
+		$organisations = self::get_organisations();
+
+		$organisation_index = esc_attr($_GET['organisation_key']);
+
+		if(!isset($organisations[$organisation_index])){
+			$status = 7;
+		}
+		elseif($status === 5){
+			unset($organisations[$organisation_index]);
+			update_option("_donation_organisations", $organisations);
+		}
+
+		$url = add_query_arg(array('status' => $status), $base_url);
+
+		wp_safe_redirect($url);
+		die();
+	}
+
 	public function product_donation_amount($atts){
 		$atts = shortcode_atts( array(
 			'type' => 'formatted',
@@ -269,6 +361,40 @@ class WOO_Donation_Calculate{
 		$price = $this->get_adjusted_price($ID);
 
 		return $atts['type'] !== "raw" ? wc_price($price) : $price;
+	}
+
+	public static function get_organisations(){
+		$organisations = get_option( "_donation_organisations" );
+
+		if ( $organisations === "" || $organisations === null ){
+			return array();
+		}
+
+		return $organisations;
+	}
+
+	public static function render_status_message( $status ){
+        if(!$status){
+            return;
+        }
+
+        $status_codes = array(
+            '1' => 'Organisation saved successfully',
+            '2' => 'Failed to save organisation. Invalid form submission',
+            '3' => 'Failed to save organisation. Organisation name can not be empty',
+            '4' => 'Failed to save organisation. Organisation already exists',
+            '5' => 'Organisation removed successfully',
+            '6' => 'Failed to remove organisation. Invalid request',
+            '7' => 'Failed to remove organisation. Invalid organisation removal request',
+        );
+
+        if(isset($status_codes[$status])){
+	        $status_message = $status_codes[$status];
+
+	        $msg_class = ($status == 1 || $status == 5) ? "message" : "error";
+
+            echo sprintf('<div class="alert alert-%s">%s</div>', $msg_class, $status_message);
+        }
 	}
 }
 
